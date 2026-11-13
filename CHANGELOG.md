@@ -2,6 +2,20 @@
 
 Voci per data, dalla più recente, una per data: le modifiche dello stesso giorno si aggiungono alla sua voce. La data fa da versione. Un'istanza registra quella dei suoi modelli e, aggiornandosi, rilegge anche la voce di quel giorno, che nel frattempo può essersi allungata: per questo le azioni si scrivono in modo che ripeterle non faccia danni. Ogni voce dice cosa cambia; **Azioni per l'istanza** dice cosa adattare in un'installazione già presente, seguendo [AGGIORNA.md](./AGGIORNA.md).
 
+## 2026-11-13
+
+Modalità hub e archiviazione tra dischi.
+
+- Modalità hub: per chi tiene le note in un repository o in una cartella con il proprio `AGENTS.md` e la propria mappa, Scrivano non scrive pagine sul Desktop. Osserva gli ingressi (Desktop, Download) e l'archivio degli originali e aggiunge all'hub la sezione «Ingresso», dal nuovo modello [modelli/ingresso.md](./modelli/ingresso.md). Procedura in `INSTALLA.md`, decisioni nel [progetto](./docs/progetto-installazione.md#modalità-hub). La modalità Desktop resta com'era.
+- `riordina.py`: un piano può nominare più `radici`, con percorsi che cominciano dal nome della radice, per spostare per esempio dal Desktop e da Download all'archivio. Tra dischi diversi una mossa copia con il suffisso `.scrivano-copia`, verifica le impronte, dà il nome finale e solo allora toglie l'origine; rilanciato dopo un'interruzione ricopia o completa la mossa, e `annulla` fa lo stesso al contrario. Il conteggio dei file somma tutte le radici del piano.
+- `controlla.py`: `notes` indica la cartella delle note al posto di `desktop` e `start_pages` le pagine da cui `links` parte; `links` salta anche le cartelle `archive`, oltre ad `Archivio`.
+- `config.example.json`: esclude `*.scrivano-copia`, le copie in corso di `riordina.py`.
+
+**Azioni per l'istanza:**
+
+- In `config.json` aggiungi a `exclude_files` `*.scrivano-copia`, se manca. In modalità Desktop annotalo in «Copertura del rilevatore» di `MANUTENZIONE.md`.
+- Se nelle pagine dell'istanza c'è una regola che sposta a mano tra dischi diversi perché `riordina.py` lavorava in una sola radice, sostituiscila con un piano con più `radici`, nel formato del README.
+
 ## 2026-10-11
 
 Installazione e uso su macOS.

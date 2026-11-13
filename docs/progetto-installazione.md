@@ -72,6 +72,17 @@ I domini si scelgono dall'oggetto delle domande, non dal tipo di file o dal cont
 - "Aggiorna Scrivano": l'agente segue `AGGIORNA.md`. Aggiorna il repository (`git pull`, oppure lo zip lasciando `config.json` e `.stato/`), legge nel CHANGELOG le voci dalla data dei modelli scritta in «Questa istanza» in poi, compresa quella, e porta le modifiche nelle copie del Desktop, dalla voce più vecchia, rispettando gli adattamenti locali. La data fa da versione: il CHANGELOG ha una sola voce per data, con azioni che si possono ripetere.
 - La disinstallazione è descritta nel README: si cancellano la cartella in Documenti, le pagine di sistema del Desktop e l'eventuale configurazione di Codex. Il riordino e le note restano.
 
+## Modalità hub
+
+Decisioni del 2026-11-13, per chi tiene già le note fuori dal Desktop.
+
+- **Quando.** L'utente ha un hub: un repository o una cartella di note con il proprio `AGENTS.md` e la propria mappa, spesso condiviso tra più computer con git, e gli originali in un archivio a parte, di solito una cartella sincronizzata. Desktop e Download sono solo ingressi.
+- **Una seconda modalità, non una sostituzione.** Per chi parte da un Desktop disordinato, le pagine di Scrivano sul Desktop restano il modo più semplice. In un hub, invece, mappa e regole ci sono già: pagine di Scrivano accanto sarebbero doppioni che invecchiano. Scrivano vi aggiunge solo la sezione «Ingresso» ([modello](../modelli/ingresso.md)), nella lingua dell'hub.
+- **Cosa osserva.** Gli ingressi, per sapere cosa è arrivato, e l'archivio degli originali, così le note restano al passo con le fonti. Le note dell'hub no: le segue già git.
+- **Un registro per computer.** Ogni computer osserva le proprie cartelle, con le proprie radici; l'archivio sincronizzato compare su tutti. Un originale archiviato su un computer arriva sugli altri come aggiunta: l'agente trova la nota già aggiornata dall'hub e chiude l'evento.
+- **Archiviare tra dischi.** Gli ingressi stanno sul disco di sistema, l'archivio e i media spesso altrove. `riordina.py` accetta piani con più radici con nome e, tra dischi diversi, copia, verifica le impronte e solo dopo toglie l'origine: le stesse garanzie di giornale, ripresa e annullamento degli spostamenti nella stessa radice, invece di spostamenti a mano.
+- **`links`.** Parte dalle pagine dell'hub (`notes` e `start_pages`) e salta le cartelle storiche `Archivio` e `archive`.
+
 ## Collaudo
 
 - Test in cartelle temporanee per `controlla.py` e `riordina.py`.

@@ -2,7 +2,7 @@
 
 Se l'utente ti chiede di installare o aggiornare il sistema, segui [INSTALLA.md](./INSTALLA.md) o [AGGIORNA.md](./AGGIORNA.md) e basta: il resto di questa pagina vale solo per chi sviluppa il repository.
 
-Strumenti descritti nel [README](./README.md): `controlla.py` rileva i cambiamenti, `riordina.py` esegue piani di riordino approvati. I [modelli](./modelli/) diventano le pagine del Desktop di chi installa il sistema. Il [progetto di installazione](docs/progetto-installazione.md) raccoglie decisioni e ordine dei lavori. Configurazione reale, registro e pagine dell'archivio appartengono all'istanza che usa gli strumenti.
+Strumenti descritti nel [README](./README.md): `controlla.py` rileva i cambiamenti, `riordina.py` esegue piani di riordino approvati. I [modelli](./modelli/) diventano le pagine del Desktop di chi installa il sistema o, in modalità hub, la sezione «Ingresso» del suo hub. Il [progetto di installazione](docs/progetto-installazione.md) raccoglie decisioni e ordine dei lavori. Configurazione reale, registro e pagine dell'archivio appartengono all'istanza che usa gli strumenti.
 
 ## Regole
 

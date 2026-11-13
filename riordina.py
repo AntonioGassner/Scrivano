@@ -1,8 +1,9 @@
 """Inventario di una cartella e riordino secondo un piano approvato. Solo libreria standard; nessuna rete.
 
 Lo script non decide nulla: l'agente scrive il piano, l'utente lo approva, lo script lo esegue.
-Non sovrascrive, non cancella (salvo i metadati che il sistema rigenera, nelle cartelle da togliere),
-si ferma al primo problema e annota ogni mossa nel giornale.
+Non sovrascrive, non cancella (salvo i metadati che il sistema rigenera, nelle cartelle da togliere,
+e l'origine di uno spostamento tra dischi dopo averne verificato la copia), si ferma al primo problema
+e annota ogni mossa nel giornale.
 """
 from __future__ import annotations
 import argparse
@@ -14,6 +15,7 @@ import heapq
 import json
 import os
 from pathlib import Path
+import shutil
 import stat
 import sys
 import time
@@ -237,22 +239,77 @@ def relative(rel):
         raise ValueError(f'Percorso non valido nel piano: {rel}')
     return p.as_posix()
 
-def load_plan(path):
-    plan = json.loads(Path(path).read_text(encoding='utf-8-sig'))
-    if not isinstance(plan, dict) or 'radice' not in plan or not isinstance(plan.get('mosse'), list):
-        raise ValueError('Piano non valido: servono "radice" e "mosse"')
-    root = Path(plan['radice']).expanduser().resolve()
+def folder(value):
+    root = Path(value).expanduser().resolve()
     if not root.is_dir():
         raise ValueError(f'Radice del piano non trovata: {root}')
+    return root
+
+class Places:
+    """Radici di un piano. Con "radice" i percorsi sono relativi a quella; con "radici" cominciano
+    dal nome della radice: "Desktop/fattura.pdf", "Archivio/finanze/fattura.pdf"."""
+
+    def __init__(self, roots):
+        self.roots = roots
+
+    def text(self, rel):
+        rel = relative(rel)
+        if '' not in self.roots:
+            name, _, rest = rel.partition('/')
+            if name not in self.roots:
+                raise ValueError(f'Il percorso non comincia da una radice del piano: {rel}')
+            if not rest:
+                raise ValueError(f'Percorso non valido nel piano: {rel} è una radice')
+        return rel
+
+    def split(self, rel):
+        if '' in self.roots:
+            return self.roots[''], rel
+        name, _, rest = rel.partition('/')
+        return self.roots[name], rest
+
+    def __call__(self, rel):
+        base, rest = self.split(rel)
+        return base / rest if rest else base
+
+    def describe(self):
+        if '' in self.roots:
+            return {'radice': str(self.roots[''])}
+        return {'radici': {name: str(path) for name, path in self.roots.items()}}
+
+def load_plan(path):
+    plan = json.loads(Path(path).read_text(encoding='utf-8-sig'))
+    if not isinstance(plan, dict) or ('radice' in plan) == ('radici' in plan) or not isinstance(plan.get('mosse'), list):
+        raise ValueError('Piano non valido: servono "mosse" e "radice" oppure "radici"')
+    if 'radice' in plan:
+        roots = {'': folder(plan['radice'])}
+    else:
+        if not isinstance(plan['radici'], dict) or not plan['radici']:
+            raise ValueError('Piano non valido: "radici" associa un nome a ogni cartella')
+        roots = {}
+        for name, value in plan['radici'].items():
+            if not name or name in ('.', '..') or any(c in name for c in '/\\:'):
+                raise ValueError(f'Nome di radice non valido: {name}')
+            roots[name] = folder(value)
+        # Radici distinte e disgiunte: un percorso del piano ha un solo modo di essere scritto.
+        names = list(roots)
+        if len({n.casefold() for n in names}) < len(names):
+            raise ValueError('Nomi di radice ripetuti: le maiuscole non contano')
+        for i, a in enumerate(names):
+            for b in names[i + 1:]:
+                pa, pb = (key(roots[n].as_posix().rstrip('/')) + '/' for n in (a, b))
+                if pa.startswith(pb) or pb.startswith(pa):
+                    raise ValueError(f'Le radici {a} e {b} si sovrappongono')
+    places = Places(roots)
     moves = []
     for move in plan['mosse']:
         if not isinstance(move, dict) or 'da' not in move or 'a' not in move:
             raise ValueError('Mossa non valida: servono "da" e "a"')
-        moves.append((relative(move['da']), relative(move['a'])))
+        moves.append((places.text(move['da']), places.text(move['a'])))
     # Cartelle-contenitore da togliere se le mosse le lasciano vuote.
     if not isinstance(plan.get('vuote', []), list):
         raise ValueError('Piano non valido: "vuote" è un elenco di cartelle')
-    return root, moves, [relative(folder) for folder in plan.get('vuote', [])]
+    return places, moves, [places.text(f) for f in plan.get('vuote', [])]
 
 def journal_path(plan_path):
     return plan_path.with_name(plan_path.stem + '.giornale.jsonl')
@@ -280,28 +337,149 @@ def ancestors(rel):
     parts = rel.split('/')
     return ['/'.join(parts[:i]) for i in range(1, len(parts) + 1)]
 
-def linked(root, rel):
-    # Vero se rel, o una cartella che lo contiene, è un link simbolico o una junction.
-    return any(os.path.lexists(root / a) and is_link(os.stat(root / a, follow_symlinks=False)) for a in ancestors(rel))
+def linked(at, rel):
+    # Vero se rel, o una cartella che lo contiene dentro la sua radice, è un link simbolico o una junction.
+    base, rest = at.split(rel)
+    return any(os.path.lexists(base / a) and is_link(os.stat(base / a, follow_symlinks=False)) for a in ancestors(rest))
 
-def status(root, src, dst, noted=False):
-    has_src, has_dst = os.path.lexists(root / src), os.path.lexists(root / dst)
+# --- Spostamenti tra dischi ---
+
+def volume(path):
+    # Volume del percorso o, se non esiste ancora, della prima cartella che lo contiene.
+    for p in (path, *path.parents):
+        if os.path.lexists(p):
+            return os.stat(p, follow_symlinks=False).st_dev
+    return None
+
+def crossing(src, dst):
+    # Vero se src e dst stanno su volumi diversi: os.rename non basta, serve una copia.
+    return volume(src) != volume(dst)
+
+def partial(path):
+    # Copia in corso, accanto alla destinazione: prende il nome finale solo dopo la verifica.
+    return path.with_name(path.name + '.scrivano-copia')
+
+def has_link(path):
+    # Vero se nella cartella c'è un link simbolico o una junction: una copia non saprebbe riprodurli.
+    stack = [path]
+    while stack:
+        with os.scandir(stack.pop()) as listing:
+            for entry in listing:
+                info = os.stat(entry.path, follow_symlinks=False)
+                if is_link(info):
+                    return True
+                if stat.S_ISDIR(info.st_mode):
+                    stack.append(entry.path)
+    return False
+
+def copy_tree(src, dst):
+    # Copia senza sovrascrivere e rilegge ogni file copiato: l'impronta deve essere quella dell'origine.
+    info = os.stat(src, follow_symlinks=False)
+    if is_link(info):
+        raise OSError(f'Link simbolico o junction: da spostare a mano: {src}')
+    if stat.S_ISDIR(info.st_mode):
+        os.mkdir(dst)
+        with os.scandir(src) as listing:
+            names = [e.name for e in listing]
+        for name in names:
+            copy_tree(src / name, dst / name)
+        shutil.copystat(src, dst)
+        return
+    if not stat.S_ISREG(info.st_mode):
+        raise OSError(f'Né file né cartella: {src}')
+    h = hashlib.sha256()
+    with open(src, 'rb') as fin, open(dst, 'xb') as fout:
+        for block in iter(lambda: fin.read(1024 * 1024), b''):
+            h.update(block)
+            fout.write(block)
+    after = os.stat(src, follow_symlinks=False)
+    if (after.st_size, after.st_mtime_ns) != (info.st_size, info.st_mtime_ns):
+        raise OSError(f'File modificato durante la copia: {src}')
+    shutil.copystat(src, dst)
+    if digest(dst) != h.hexdigest():
+        raise OSError(f"Copia diversa dall'originale: {dst}")
+
+def remove(path):
+    # Toglie l'origine di uno spostamento già copiato e verificato; non segue link né junction.
+    info = os.stat(path, follow_symlinks=False)
+    if is_link(info):
+        raise OSError(f'Link simbolico o junction: da togliere a mano: {path}')
+    if stat.S_ISDIR(info.st_mode):
+        with os.scandir(path) as listing:
+            names = [e.name for e in listing]
+        for name in names:
+            remove(path / name)
+        os.rmdir(path)
+        return
+    try:
+        os.unlink(path)
+    except PermissionError:
+        # Su Windows un file di sola lettura non si cancella finché non perde l'attributo.
+        os.chmod(path, stat.S_IWRITE)
+        os.unlink(path)
+
+def contained(part, whole):
+    # Vero se ogni file di part c'è anche in whole, identico: part è allora l'avanzo di una copia finita.
+    if not os.path.lexists(whole):
+        return False
+    info, other = os.stat(part, follow_symlinks=False), os.stat(whole, follow_symlinks=False)
+    if is_link(info) or is_link(other):
+        return False
+    if stat.S_ISDIR(info.st_mode):
+        if not stat.S_ISDIR(other.st_mode):
+            return False
+        with os.scandir(part) as listing:
+            names = [e.name for e in listing]
+        return all(contained(part / name, whole / name) for name in names)
+    return (stat.S_ISREG(info.st_mode) and stat.S_ISREG(other.st_mode) and info.st_size == other.st_size
+            and digest(part) == digest(whole))
+
+def transfer(src, dst, copied=lambda: None):
+    # Spostamento tra dischi: copia con un nome temporaneo, verifica, prende il nome finale e solo allora
+    # toglie l'origine. Un'interruzione lascia l'origine intera, o una copia completa e un avanzo da togliere.
+    temp = partial(dst)
+    copy_tree(src, temp)
+    copied()
+    if os.path.lexists(dst):
+        raise FileExistsError(f'Destinazione comparsa durante il riordino: {dst}')
+    os.rename(temp, dst)
+    remove(src)
+
+def finish(src, dst):
+    # Ripresa di uno spostamento tra dischi interrotto mentre toglieva l'origine: ne restano dei file,
+    # che si tolgono solo se la destinazione li ha identici. Restituisce quanti file ha tolto.
+    if not contained(src, dst):
+        raise OSError(f"L'origine non coincide con la copia già fatta: verifica a mano {src}")
+    files = count_files(src) if os.path.isdir(src) else 1
+    remove(src)
+    return files
+
+# --- Esecuzione ---
+
+def status(at, src, dst, noted=False, copied=False):
+    a, b = at(src), at(dst)
+    has_src, has_dst = os.path.lexists(a), os.path.lexists(b)
     if has_src and has_dst:
-        return 'destinazione già occupata', None
+        # Una copia tra dischi finita e verificata, interrotta mentre toglieva l'origine, si completa.
+        return (None, 'da_finire') if copied else ('destinazione già occupata', None)
     if not has_src and not has_dst:
         return 'origine mancante', None
     if not has_src:
         # Già fatta solo se il giornale la registra; altrimenti il piano non descrive la cartella.
         return (None, 'fatta') if noted else ('origine mancante e destinazione già occupata', None)
-    if linked(root, src):
+    if linked(at, src):
         return 'link simbolico o junction: da spostare a mano', None
-    if linked(root, dst):
+    if linked(at, dst):
         return 'la destinazione passa da un link simbolico o una junction', None
-    if any(os.path.lexists(root / a) and not os.path.isdir(root / a) for a in ancestors(dst)[:-1]):
+    if any(os.path.lexists(at(p)) and not os.path.isdir(at(p)) for p in ancestors(dst)[:-1]):
         return 'un file occupa il percorso di destinazione', None
+    if os.path.lexists(partial(b)) and not noted:
+        return f'copia temporanea già presente: {partial(b).name}', None
+    if crossing(a, b) and os.path.isdir(a) and has_link(a):
+        return 'cartella con link simbolici o junction diretta su un altro disco: da spostare a mano', None
     return None, 'da_fare'
 
-def check(root, moves, empties=(), noted=frozenset()):
+def check(at, moves, empties=(), noted=frozenset(), copied=frozenset()):
     # Il piano descrive l'albero originale: origini e destinazioni non si sovrappongono.
     keys = [(key(s), key(d)) for s, d in moves]
     sources, targets = Counter(s for s, _ in keys), Counter(d for _, d in keys)
@@ -322,17 +500,17 @@ def check(root, moves, empties=(), noted=frozenset()):
         elif any(a in targets for a in ancestors(kd)[:-1]):
             issue = "destinazione dentro un'altra destinazione del piano"
         else:
-            issue, state = status(root, src, dst, (ks, kd) in noted)
+            issue, state = status(at, src, dst, (ks, kd) in noted, (ks, kd) in copied)
         states.append(state)
         if issue:
             problems.append({'mossa': number, 'da': src, 'a': dst, 'problema': issue})
     for folder in empties:
-        if os.path.lexists(root / folder) and (linked(root, folder) or not os.path.isdir(root / folder)):
+        if os.path.lexists(at(folder)) and (linked(at, folder) or not os.path.isdir(at(folder))):
             problems.append({'vuota': folder, 'problema': 'non è una cartella da svuotare'})
     return states, problems
 
-def missing_parents(root, rel):
-    return [f for f in ancestors(rel)[:-1] if not os.path.lexists(root / f)]
+def missing_parents(at, rel):
+    return [f for f in ancestors(rel)[:-1] if not os.path.lexists(at(f))]
 
 def only_metadata(folder):
     # Contenuto di una cartella fatta solo di metadati rigenerati dal sistema (anche di nessuno), altrimenti None.
@@ -385,39 +563,56 @@ def note(log, **entry):
     os.fsync(log.fileno())
 
 def execute(plan_path, dry_run=False):
-    root, moves, empties = load_plan(plan_path)
+    at, moves, empties = load_plan(plan_path)
     journal = journal_path(plan_path)
     # Mosse annotate da un'esecuzione precedente dello stesso piano: le sole che possono risultare fatte.
-    noted = {(key(e['da']), key(e['a'])) for e in read_journal(journal) if 'da' in e}
-    states, problems = check(root, moves, empties, noted)
-    report = {'radice': str(root), 'mosse': len(moves), 'da_fare': states.count('da_fare'),
+    entries = read_journal(journal)
+    noted = {(key(e['da']), key(e['a'])) for e in entries if 'da' in e}
+    copied = {(key(e['copiata']), key(e['a'])) for e in entries if 'copiata' in e}
+    states, problems = check(at, moves, empties, noted, copied)
+    report = {**at.describe(), 'mosse': len(moves), 'da_fare': states.count('da_fare'),
               'gia_fatte': states.count('fatta'), 'problemi': problems}
+    if 'da_finire' in states:
+        report['da_finire'] = states.count('da_finire')
     if problems or dry_run:
         return report, int(bool(problems))
-    done, error, removed, kept = 0, None, [], []
+    done, error, removed, kept, dropped = 0, None, [], [], 0
+    roots = list(at.roots.values())
     with lock(plan_path.parent), open(journal, 'a', encoding='utf-8') as log:
-        before = count_files(root)
+        # Copie lasciate a metà da un'esecuzione interrotta: le origini sono intere, si ricopiano.
         for (src, dst), state in zip(moves, states):
-            if state != 'da_fare':
+            if state == 'da_fare' and os.path.lexists(partial(at(dst))):
+                remove(partial(at(dst)))
+        before = sum(count_files(r) for r in roots)
+        for (src, dst), state in zip(moves, states):
+            if state not in ('da_fare', 'da_finire'):
                 continue
             try:
-                for folder in missing_parents(root, dst):
-                    os.mkdir(root / folder)
+                if state == 'da_finire':
+                    dropped += finish(at(src), at(dst))
+                    done += 1
+                    continue
+                for folder in missing_parents(at, dst):
+                    os.mkdir(at(folder))
                     note(log, cartella=folder)
-                note(log, da=src, a=dst)
-                if os.path.lexists(root / dst):
-                    raise FileExistsError(f'Destinazione comparsa durante il riordino: {dst}')
-                os.rename(root / src, root / dst)
+                if crossing(at(src), at(dst)):
+                    note(log, da=src, a=dst, copia=True)
+                    transfer(at(src), at(dst), lambda: note(log, copiata=src, a=dst))
+                else:
+                    note(log, da=src, a=dst)
+                    if os.path.lexists(at(dst)):
+                        raise FileExistsError(f'Destinazione comparsa durante il riordino: {dst}')
+                    os.rename(at(src), at(dst))
                 done += 1
             except OSError as exc:
                 error = {'da': src, 'a': dst, 'errore': str(exc)}
                 break
         for folder in empties if error is None else ():
             # Solo cartelle rimaste vuote, a parte i metadati: una con qualcosa dentro resta e si segnala.
-            if not os.path.lexists(root / folder):
+            if not os.path.lexists(at(folder)):
                 continue
             try:
-                metadata = only_metadata(root / folder)
+                metadata = only_metadata(at(folder))
                 if metadata is None:
                     kept.append(folder)
                     continue
@@ -428,18 +623,20 @@ def execute(plan_path, dry_run=False):
                 except OSError:
                     kept.append(folder)  # un metadato in uso, come un Thumbs.db aperto: la cartella resta
                     continue
-                os.rmdir(root / folder)
+                os.rmdir(at(folder))
                 removed.append(folder)
             except OSError as exc:
                 error = {'vuota': folder, 'errore': str(exc)}
                 break
-        after = count_files(root)
+        after = sum(count_files(r) for r in roots)
+    # Completare una copia toglie i doppioni rimasti nell'origine: il conteggio scende di quelli.
+    count = {'prima': before, 'dopo': after, **({'avanzi_tolti': dropped} if dropped else {})}
     report.update(eseguite=done, errore=error, cartelle_rimosse=removed, cartelle_rimaste=kept,
-                  conteggio={'prima': before, 'dopo': after}, giornale=str(journal))
-    return report, int(bool(error) or before != after)
+                  conteggio=count, giornale=str(journal))
+    return report, int(bool(error) or before - dropped != after)
 
 def undo(plan_path):
-    root, _, _ = load_plan(plan_path)
+    at, _, _ = load_plan(plan_path)
     journal = journal_path(plan_path)
     if not journal.is_file():
         raise ValueError(f'Nessun giornale da annullare: {journal}')
@@ -447,12 +644,14 @@ def undo(plan_path):
     restored, in_place, removed, recreated, conflicts, error = 0, 0, 0, 0, [], None
     with lock(plan_path.parent):
         for entry in reversed(entries):
+            if 'copiata' in entry:
+                continue  # fase di una mossa tra dischi: la mossa ha la sua riga
             if 'rimossa' in entry:
                 # Una cartella svuotata e tolta torna prima che i file vi rientrino.
-                if not os.path.lexists(root / entry['rimossa']):
+                if not os.path.lexists(at(entry['rimossa'])):
                     try:
-                        for folder in missing_parents(root, entry['rimossa']) + [entry['rimossa']]:
-                            os.mkdir(root / folder)
+                        for folder in missing_parents(at, entry['rimossa']) + [entry['rimossa']]:
+                            os.mkdir(at(folder))
                         recreated += 1
                     except OSError as exc:
                         error = {'vuota': entry['rimossa'], 'errore': str(exc)}
@@ -461,28 +660,38 @@ def undo(plan_path):
             if 'cartella' in entry:
                 # Una cartella creata dal piano si toglie se è rimasta vuota, a parte i metadati.
                 try:
-                    metadata = only_metadata(root / entry['cartella'])
+                    metadata = only_metadata(at(entry['cartella']))
                     if metadata is not None:
                         for item in metadata:
                             os.unlink(item.path)
-                        os.rmdir(root / entry['cartella'])
+                        os.rmdir(at(entry['cartella']))
                         removed += 1
                 except OSError:
                     pass  # già assente o riempita nel frattempo: resta dov'è
                 continue
-            src, dst = root / entry['da'], root / entry['a']
+            src, dst = at(entry['da']), at(entry['a'])
             has_src, has_dst = os.path.lexists(src), os.path.lexists(dst)
-            if has_src and not has_dst:
-                in_place += 1  # mossa mai avvenuta o già annullata
-                continue
-            if has_src == has_dst:
-                problem = 'origine e destinazione presenti' if has_src else 'origine e destinazione assenti'
-                conflicts.append({'da': entry['da'], 'a': entry['a'], 'problema': problem})
-                continue
             try:
-                for folder in missing_parents(root, entry['da']):
-                    os.mkdir(root / folder)
-                os.rename(dst, src)
+                if has_src and has_dst and crossing(src, dst) and contained(dst, src):
+                    # Annullamento tra dischi interrotto mentre toglieva la destinazione: si completa.
+                    remove(dst)
+                    restored += 1
+                    continue
+                if has_src and not has_dst:
+                    in_place += 1  # mossa mai avvenuta o già annullata
+                    continue
+                if has_src == has_dst:
+                    problem = 'origine e destinazione presenti' if has_src else 'origine e destinazione assenti'
+                    conflicts.append({'da': entry['da'], 'a': entry['a'], 'problema': problem})
+                    continue
+                for folder in missing_parents(at, entry['da']):
+                    os.mkdir(at(folder))
+                if crossing(dst, src):
+                    if os.path.lexists(partial(src)):
+                        remove(partial(src))  # copia lasciata a metà da un annullamento interrotto
+                    transfer(dst, src)
+                else:
+                    os.rename(dst, src)
                 restored += 1
             except OSError as exc:
                 error = {'da': entry['da'], 'a': entry['a'], 'errore': str(exc)}
@@ -490,7 +699,7 @@ def undo(plan_path):
         if error is None and not conflicts:
             # Giornale chiuso: una nuova esecuzione ne apre uno pulito.
             journal = journal.rename(journal.with_name(f'{journal.stem}.annullato-{time.strftime("%Y%m%d-%H%M%S")}.jsonl'))
-    return ({'radice': str(root), 'ripristinate': restored, 'gia_al_posto': in_place, 'cartelle_rimosse': removed,
+    return ({**at.describe(), 'ripristinate': restored, 'gia_al_posto': in_place, 'cartelle_rimosse': removed,
              'cartelle_ricreate': recreated, 'conflitti': conflicts, 'errore': error, 'giornale': str(journal)},
             int(bool(error or conflicts)))
 

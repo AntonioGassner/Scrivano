@@ -343,6 +343,18 @@ class DetectorTests(unittest.TestCase):
         self.put('Archivio/vecchio.md','[rotto](manca.md)'); self.put('Bozze/b.md','[rotto](manca.md)')
         self.assertEqual(m.links(self.config)['issues'],[])
 
+    def test_links_from_a_hub(self):
+        # Modalità hub: le note stanno in una cartella propria, con le sue pagine di partenza e nessuna mappa di Scrivano.
+        hub=self.base/'hub'; (hub/'finance').mkdir(parents=True); (hub/'archive').mkdir()
+        (hub/'AGENTS.md').write_text('[Finanze](finance/README.md) [Storico](archive/vecchio.md)',encoding='utf-8')
+        (hub/'finance/README.md').write_text('# Finanze',encoding='utf-8')
+        (hub/'archive/vecchio.md').write_text('[rotto](manca.md)',encoding='utf-8')
+        config={**self.config,'notes':str(hub),'start_pages':['AGENTS.md']}
+        out=m.links(config)
+        self.assertEqual((out['issues'],out['checked']),([],2))
+        (hub/'finance/README.md').unlink()
+        self.assertEqual(m.links(config)['issues'][0]['target'],'finance/README.md')
+
     def test_links_report_missing_start_pages(self):
         self.put('AGENTS.md','[Mappa](MAPPA.md)'); self.put('MAPPA.md','# Mappa')
         self.assertEqual(m.links(self.config)['issues'],
@@ -357,9 +369,9 @@ class DetectorTests(unittest.TestCase):
 
     def test_config_paths_are_relative_to_the_file(self):
         folder=self.base/'istanza'; folder.mkdir(); path=folder/'config.json'
-        path.write_text(json.dumps({'desktop':'../files','roots':[{'id':'test','path':'../files'}]}),encoding='utf-8')
+        path.write_text(json.dumps({'desktop':'../files','notes':'../files','roots':[{'id':'test','path':'../files'}]}),encoding='utf-8')
         config=m.load_config(path)
-        self.assertEqual((config['desktop'],config['roots'][0]['path']),(str(self.root.resolve()),)*2)
+        self.assertEqual((config['desktop'],config['notes'],config['roots'][0]['path']),(str(self.root.resolve()),)*3)
         self.assertEqual(config['database'],str(folder/'.stato/registro.sqlite'))
         # Registro in una cartella locale fuori dallo strumento, come quando Documenti è su OneDrive.
         local=self.base/'Locale'/'Scrivano'/'registro.sqlite'
@@ -378,7 +390,8 @@ class DetectorTests(unittest.TestCase):
     def test_invalid_config_is_rejected(self):
         path=self.base/'config.json'; roots=[{'id':'x','path':'.'}]
         for config in ({},[],{'roots':[{'id':'x'}]},{'roots':[{'id':'x','path':None}]},
-                       {'roots':roots,'desktop':None},{'roots':roots,'database':''}):
+                       {'roots':roots,'desktop':None},{'roots':roots,'database':''},{'roots':roots,'notes':''},
+                       {'roots':roots,'start_pages':[]},{'roots':roots,'start_pages':'AGENTS.md'}):
             path.write_text(json.dumps(config),encoding='utf-8')
             with self.assertRaises(ValueError,msg=config): m.load_config(path)
 

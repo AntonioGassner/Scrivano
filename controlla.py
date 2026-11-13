@@ -109,9 +109,12 @@ def load_config(path):
     text = lambda value: isinstance(value, str) and value.strip()
     if not isinstance(roots, list) or not all(isinstance(r, dict) and text(r.get('id')) and text(r.get('path')) for r in roots):
         raise ValueError('Configurazione non valida: "roots" è un elenco di radici con "id" e "path"')
-    for key in ('desktop', 'database'):
+    for key in ('desktop', 'notes', 'database'):
         if key in config and not text(config[key]):
             raise ValueError(f'Configurazione non valida: "{key}" è un percorso')
+    pages = config.get('start_pages', START)
+    if not isinstance(pages, (list, tuple)) or not pages or not all(text(p) for p in pages):
+        raise ValueError('Configurazione non valida: "start_pages" è un elenco di pagine')
     ids = [r['id'] for r in roots]
     if len(ids) != len(set(ids)):
         raise ValueError('ID delle radici duplicati')
@@ -122,8 +125,9 @@ def load_config(path):
         root['path'] = str(local(root['path']).resolve())
         if 'depth' in root and (type(root['depth']) is not int or root['depth'] < 1):
             raise ValueError(f"Profondità non valida per {root['id']}: usare un intero >= 1")
-    if 'desktop' in config:
-        config['desktop'] = str(local(config['desktop']).resolve())
+    for key in ('desktop', 'notes'):
+        if key in config:
+            config[key] = str(local(config[key]).resolve())
     config['database'] = str(local(config.get('database', '.stato/registro.sqlite')))
     return config
 
@@ -437,15 +441,19 @@ LINK = re.compile(r'\]\((<[^>]+>|[^\)\n]+)\)')
 FENCE = re.compile(r'(?ms)^```.*?^```[^\n]*')
 HEADING = re.compile(r'^#{1,6}\s+(.+)$', re.M)
 START = ('AGENTS.md', 'MAPPA.md', 'MANUTENZIONE.md')
+# Cartelle di pagine storiche, che links non controlla.
+HISTORY = {'archivio', 'archive'}
 
 def slug(s):
     s = re.sub(r'[^\w\s-]', '', s.lower(), flags=re.UNICODE)
     return s.strip().replace(' ', '-')
 
 def links(config):
-    if not config.get('desktop'):
-        raise ValueError('Configurazione senza "desktop": serve a links come radice dell\'archivio')
-    base = Path(config['desktop']).resolve()
+    # Le note stanno sul Desktop o, in modalità hub, in una cartella propria con le sue pagine di partenza.
+    root = config.get('notes') or config.get('desktop')
+    if not root:
+        raise ValueError('Configurazione senza "notes" né "desktop": serve a links come radice delle note')
+    base, start = Path(root).resolve(), config.get('start_pages', START)
     skip = exclusions(config)
     issues, visited, pages = [], set(), {}
     def page(path):
@@ -456,15 +464,15 @@ def links(config):
             except (OSError, UnicodeDecodeError):
                 pages[path] = None
         return pages[path]
-    queue = [base / name for name in START if (base / name).is_file()]
-    issues += [{'file': str(base), 'target': name, 'error': 'missing'} for name in START if not (base / name).is_file()]
+    queue = [base / name for name in start if (base / name).is_file()]
+    issues += [{'file': str(base), 'target': name, 'error': 'missing'} for name in start if not (base / name).is_file()]
     while queue:
         path = queue.pop()
         if path in visited:
             continue
-        # Le pagine in Archivio sono storiche; i percorsi esclusi sono fuori dall'archivio personale.
+        # Le pagine in Archivio (o archive) sono storiche; i percorsi esclusi sono fuori dall'archivio personale.
         rel = path.relative_to(base).as_posix()
-        if 'Archivio' in rel.split('/') or skip(rel):
+        if any(part.casefold() in HISTORY for part in rel.split('/')) or skip(rel):
             continue
         visited.add(path)
         if page(path) is None:

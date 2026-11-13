@@ -275,4 +275,129 @@ class PlanTests(Base):
         self.assertEqual(code,1); self.assertEqual(out['conflitti'][0]['problema'],'origine e destinazione assenti')
         self.assertTrue(self.exists('a.txt')); self.assertTrue((self.state/'piano.giornale.jsonl').exists())
 
+class RootsTests(Base):
+    # Piani con più radici: dagli ingressi all'archivio, anche su un altro disco.
+    def setUp(self):
+        super().setUp(); self.archive=self.base/'Archivio'; self.archive.mkdir()
+    def roots_plan(self, *moves, vuote=()):
+        p=self.state/'piano.json'
+        p.write_text(json.dumps({'radici':{'Desktop':str(self.root),'Archivio':str(self.archive)},
+                                 'mosse':[{'da':a,'a':b} for a,b in moves],'vuote':list(vuote)}),encoding='utf-8')
+        return p
+    def two_disks(self):
+        # Simula l'archivio su un altro volume: os.rename non può portarci nulla.
+        archive=str(self.archive.resolve()); real=m.os.rename
+        def rename(src,dst):
+            if str(src).startswith(archive)!=str(dst).startswith(archive): raise OSError(18,'volumi diversi')
+            return real(src,dst)
+        return (patch.object(m,'volume',lambda p: 2 if str(p).startswith(archive) else 1),
+                patch.object(m.os,'rename',side_effect=rename))
+    def journal(self):
+        return [json.loads(r) for r in (self.state/'piano.giornale.jsonl').read_text(encoding='utf-8').splitlines()]
+    def busy_source(self, name):
+        # Un file dell'origine che non si lascia cancellare, come uno aperto in un'altra app.
+        root,real=str(self.root.resolve()),m.os.unlink
+        def unlink(path):
+            if Path(path).name==name and str(path).startswith(root): raise PermissionError('in uso')
+            return real(path)
+        return patch.object(m.os,'unlink',side_effect=unlink)
+
+    def test_moves_between_roots_on_the_same_disk(self):
+        self.put('fattura.pdf'); self.put('Scansioni/a.jpg')
+        plan=self.roots_plan(('Desktop/fattura.pdf','Archivio/finanze/fattura.pdf'),('Desktop/Scansioni/a.jpg','Archivio/documenti/a.jpg'),
+                             vuote=['Desktop/Scansioni'])
+        out,code=m.execute(plan)
+        self.assertEqual((code,out['eseguite'],out['conteggio'],out['cartelle_rimosse']),(0,2,{'prima':2,'dopo':2},['Desktop/Scansioni']))
+        self.assertTrue((self.archive/'finanze/fattura.pdf').exists()); self.assertFalse(self.exists('fattura.pdf'))
+        self.assertEqual(set(out['radici']),{'Desktop','Archivio'})
+        out,code=m.undo(plan)
+        self.assertEqual((code,out['ripristinate'],out['cartelle_ricreate']),(0,2,1))
+        self.assertTrue(self.exists('fattura.pdf') and self.exists('Scansioni/a.jpg')); self.assertFalse((self.archive/'finanze').exists())
+
+    def test_invalid_roots_are_rejected(self):
+        self.put('a.txt'); (self.root/'Sotto').mkdir(); p=self.state/'piano.json'
+        for plan in ({'radice':str(self.root),'radici':{'D':str(self.archive)},'mosse':[]},
+                     {'radici':{'Desktop':str(self.root),'Dentro':str(self.root/'Sotto')},'mosse':[]},
+                     {'radici':{'Desktop':str(self.root),'desktop':str(self.archive)},'mosse':[]},
+                     {'radici':{'C:':str(self.root)},'mosse':[]},
+                     {'radici':{'Desktop':str(self.root)},'mosse':[{'da':'a.txt','a':'Desktop/b.txt'}]},
+                     {'radici':{'Desktop':str(self.root),'Archivio':str(self.archive)},'mosse':[{'da':'Desktop/a.txt','a':'Archivio'}]},
+                     {'radici':{'Desktop':str(self.root),'Archivio':str(self.base/'manca')},'mosse':[]}):
+            p.write_text(json.dumps(plan),encoding='utf-8')
+            with self.assertRaises(ValueError,msg=plan): m.execute(p,dry_run=True)
+
+    def test_moves_across_disks_copy_verify_and_remove(self):
+        self.put('fattura.pdf','pdf'); self.put('Pratica/a.txt','a'); self.put('Pratica/Sotto/b.txt','b')
+        os.utime(self.root/'fattura.pdf',ns=(1_600_000_000_000_000_000,)*2)
+        plan=self.roots_plan(('Desktop/fattura.pdf','Archivio/finanze/fattura.pdf'),('Desktop/Pratica','Archivio/documenti/Pratica'))
+        disks,rename=self.two_disks()
+        with disks,rename: out,code=m.execute(plan)
+        self.assertEqual((code,out['eseguite'],out['errore'],out['conteggio']),(0,2,None,{'prima':3,'dopo':3}))
+        self.assertEqual((self.archive/'documenti/Pratica/Sotto/b.txt').read_text(),'b')
+        self.assertEqual((self.archive/'finanze/fattura.pdf').stat().st_mtime_ns,1_600_000_000_000_000_000)
+        self.assertFalse(self.exists('fattura.pdf') or self.exists('Pratica'))
+        self.assertEqual(list(self.archive.rglob('*.scrivano-copia')),[])
+        righe=[r for r in self.journal() if 'cartella' not in r]
+        self.assertEqual([r.get('copiata') for r in righe],[None,'Desktop/fattura.pdf',None,'Desktop/Pratica'])
+        self.assertTrue(all(r['copia'] for r in righe if 'da' in r))
+        with disks,rename: out,code=m.undo(plan)
+        self.assertEqual((code,out['ripristinate'],out['cartelle_rimosse']),(0,2,2))
+        self.assertEqual((self.root/'Pratica/Sotto/b.txt').read_text(),'b'); self.assertEqual(list(self.archive.iterdir()),[])
+
+    def test_interrupted_copy_starts_again(self):
+        self.put('Pratica/a.txt','a'); self.put('Pratica/b.txt','b'); plan=self.roots_plan(('Desktop/Pratica','Archivio/Pratica'))
+        disks,rename=self.two_disks(); real=m.digest
+        def broken(path):
+            if Path(path).name=='b.txt': raise OSError('disco pieno')
+            return real(path)
+        with disks,rename,patch.object(m,'digest',side_effect=broken): out,code=m.execute(plan)
+        self.assertEqual((code,out['errore']['da']),(1,'Desktop/Pratica')); self.assertTrue((self.archive/'Pratica.scrivano-copia').exists())
+        with disks,rename: out,code=m.execute(plan)
+        self.assertEqual((code,out['eseguite'],out['conteggio']),(0,1,{'prima':2,'dopo':2}))
+        self.assertFalse((self.archive/'Pratica.scrivano-copia').exists() or self.exists('Pratica'))
+        self.assertEqual((self.archive/'Pratica/b.txt').read_text(),'b')
+
+    def test_interrupted_removal_is_finished(self):
+        # La copia è completa e verificata; l'origine è stata tolta solo in parte.
+        self.put('Pratica/a.txt','a'); self.put('Pratica/b.txt','b'); plan=self.roots_plan(('Desktop/Pratica','Archivio/Pratica'))
+        disks,rename=self.two_disks()
+        with disks,rename,self.busy_source('b.txt'): out,code=m.execute(plan)
+        self.assertEqual(code,1); self.assertTrue(self.exists('Pratica/b.txt') and (self.archive/'Pratica/b.txt').exists())
+        with disks,rename: out,code=m.execute(plan,dry_run=True)
+        self.assertEqual((code,out['da_finire']),(0,1))
+        with disks,rename: out,code=m.execute(plan)
+        self.assertEqual((code,out['conteggio']),(0,{'prima':3,'dopo':2,'avanzi_tolti':1})); self.assertFalse(self.exists('Pratica'))
+
+    def test_changed_leftover_is_not_removed(self):
+        self.put('Pratica/a.txt','a'); self.put('Pratica/b.txt','b'); plan=self.roots_plan(('Desktop/Pratica','Archivio/Pratica'))
+        disks,rename=self.two_disks()
+        with disks,rename,self.busy_source('b.txt'): m.execute(plan)
+        self.put('Pratica/b.txt','cambiato')
+        with disks,rename: out,code=m.execute(plan)
+        self.assertEqual(code,1); self.assertIn('verifica a mano',out['errore']['errore'])
+        self.assertEqual((self.root/'Pratica/b.txt').read_text(encoding='utf-8'),'cambiato')
+
+    def test_interrupted_undo_across_disks_is_finished(self):
+        self.put('Pratica/a.txt','a'); self.put('Pratica/b.txt','b'); plan=self.roots_plan(('Desktop/Pratica','Archivio/Pratica'))
+        disks,rename=self.two_disks(); archive,real=str(self.archive.resolve()),m.os.unlink
+        def busy(path):
+            if Path(path).name=='b.txt' and str(path).startswith(archive): raise PermissionError('in uso')
+            return real(path)
+        with disks,rename: m.execute(plan)
+        with disks,rename,patch.object(m.os,'unlink',side_effect=busy): out,code=m.undo(plan)
+        self.assertEqual(code,1); self.assertTrue(self.exists('Pratica/b.txt') and (self.archive/'Pratica/b.txt').exists())
+        with disks,rename: out,code=m.undo(plan)
+        self.assertEqual((code,out['ripristinate']),(0,1)); self.assertFalse((self.archive/'Pratica').exists())
+
+    def test_foreign_temporary_copy_is_a_problem(self):
+        self.put('a.txt'); (self.archive/'a.txt.scrivano-copia').write_text('altro')
+        out,code=m.execute(self.roots_plan(('Desktop/a.txt','Archivio/a.txt')),dry_run=True)
+        self.assertEqual(code,1); self.assertIn('copia temporanea',out['problemi'][0]['problema'])
+
+    def test_links_inside_a_folder_stay_on_their_disk(self):
+        target=self.base/'fuori'; target.mkdir(); self.put('Pratica/a.txt'); junction(target,self.root/'Pratica/link')
+        disks,rename=self.two_disks()
+        with disks,rename: out,code=m.execute(self.roots_plan(('Desktop/Pratica','Archivio/Pratica')))
+        self.assertEqual(code,1); self.assertIn('altro disco',out['problemi'][0]['problema']); self.assertTrue(self.exists('Pratica/a.txt'))
+
 if __name__=='__main__': unittest.main()

@@ -17,6 +17,13 @@ Vale per Windows e per macOS. I comandi sono scritti per Windows: su macOS i per
 
 Se l'utente ti indica una cartella di prova al posto del Desktop, usala come radice e usa le cartelle che ti indica come Documenti, Download e strumento. I controlli sulle cartelle superiori si fermano alla cartella di prova. Salta la configurazione globale di Codex e lascia intatto il resto del PC. In una prova senza nessuno a rispondere, annota ogni domanda con la risposta che scegli e prosegui.
 
+## Due modalità
+
+- **Desktop**, la normale: il Desktop diventa l'archivio, con le pagine di Scrivano (regole, mappa, manutenzione, guide). È la procedura dei punti 1–6.
+- **Hub**: l'utente tiene già le note in un repository o in una cartella con il suo `AGENTS.md` e la sua mappa, e gli originali altrove, per esempio in una cartella sincronizzata. Scrivano non scrive pagine proprie: osserva gli ingressi (Desktop, Download) e l'archivio degli originali, e aiuta ad archiviare quello che arriva. Segui [Modalità hub](#modalità-hub).
+
+Scegli hub solo se l'utente lo chiede o te lo indica: un `AGENTS.md` con una mappa, fuori dal Desktop, che l'utente dice di usare per le cose personali. Nel dubbio chiedi.
+
 ## 1. Preparare
 
 1. Trova le cartelle reali, che possono stare su OneDrive:
@@ -127,3 +134,18 @@ Spiega all'utente, in poche righe:
 Se in questa installazione hai installato Python su Windows, aggiungi che prima della prossima sessione va chiusa del tutto e riaperta l'app da cui parte l'agente: solo allora `python` risponde.
 
 Poi offri di interpretare subito un dominio a scelta: leggerne i documenti e scriverne la nota canonica.
+
+## Modalità hub
+
+L'hub ha già regole, mappa e note: Scrivano vi aggiunge soltanto la sezione «Ingresso» e lascia il resto com'è. Le regole fisse valgono anche qui.
+
+1. **Preparare.** Segui i punti 1.1, 1.2, 1.4, 1.5 e 1.6. Al posto del punto 1.3 leggi l'`AGENTS.md` dell'hub e la sua mappa: dove vanno gli originali (l'**archivio**, spesso una cartella sincronizzata), quali cartelle fanno da ingresso, quali altre destinazioni usa (media, lavoro, repository). Se l'hub ha già una sezione «Ingresso» con «Questa istanza», Scrivano gira già su un altro computer dello stesso hub: su questo installa solo lo strumento e `config.json`, perché il registro è di ogni computer, e aggiungi le radici di questo computer a «Questa istanza».
+2. **Radici.** Gli ingressi: Desktop per intero e Download a un livello, come nel modello. L'archivio per intero, così le note restano al passo con gli originali. Altre cartelle che la mappa dell'hub indica come sede di originali, se l'utente vuole che le note le seguano; archivi grandi e stabili, come foto e video, restano fuori. Se l'archivio non esiste ancora, per esempio perché il client di sincronizzazione non è installato, lascialo fuori e scrivi in «Questa istanza» che va aggiunto: una radice che manca dà un errore a ogni scansione.
+3. **Configurazione.** Dal [modello](./config.example.json), con `notes` al posto di `desktop`: la cartella dell'hub, e `start_pages` con le sue pagine di partenza, di solito `["AGENTS.md"]`, così `links` controlla le note dell'hub. Il registro sta in una cartella locale come al punto 5.5, mai nell'hub né nell'archivio. Escludi l'hub dalle radici che lo contengono, se le sue note cambiano spesso: le segue già git.
+4. **Riordino degli ingressi.** Se negli ingressi c'è materiale, fai l'inventario come al punto 2.1 e proponi dove archiviarlo seguendo la mappa dell'hub, non il catalogo dei domini. Il piano nomina le radici di partenza e di arrivo, nel formato del [README](./README.md#riordino); tra dischi diversi lo script copia, verifica e poi toglie l'origine. Se l'utente non vuole spostare nulla adesso, salta questo punto: l'agente proporrà gli arrivi una sessione alla volta.
+5. **Sezione «Ingresso».** Copia [modelli/ingresso.md](./modelli/ingresso.md) nell'`AGENTS.md` dell'hub, o nella pagina dove l'hub tiene le procedure, al posto di un'eventuale sezione segnaposto. Scrivila nella lingua dell'hub e sostituisci i segnaposto: le destinazioni con quelle della sua mappa, i comandi con il Python e lo strumento di questo computer e, se l'hub è condiviso tra più computer, una riga per computer o un rimando alla pagina che dice dove stanno le cose su ciascuno. Se l'hub è un repository git, chiedi prima di fare commit.
+6. **Verifica e base.** Esegui `links` e `scan` come al punto 5.7. `links` controlla le note dell'hub: un link rotto che c'era già si segnala all'utente invece di correggerlo da soli.
+
+Fatto quando nella sezione «Ingresso» non resta nessun `{{`, `links` non segnala problemi nuovi e la prima scansione ha creato la base senza errori.
+
+Per chiudere, spiega in poche righe: i file nuovi si lasciano sul Desktop o in Download, e l'agente propone dove archiviarli; quando un originale cambia nell'archivio, l'agente aggiorna le note; il rilevatore parte a ogni sessione e non gira in background.

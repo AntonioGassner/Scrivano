@@ -10,6 +10,8 @@ Apri l'agente sul tuo Desktop, in modalità auto (Claude Code) o con accesso com
 
 L'agente guarda cosa c'è sul Desktop, ti propone un'organizzazione per argomenti e la applica quando sei d'accordo. Se preferisci non spostare nulla, il sistema si installa sulle cartelle che hai già.
 
+Se tieni già le note in un repository o in una cartella con il suo `AGENTS.md` e la sua mappa, un *hub*, e gli originali altrove, per esempio in una cartella sincronizzata, chiedi la **modalità hub**: Scrivano non scrive pagine sul Desktop, che resta un ingresso come Download, e diventa lo strumento che ti dice cosa è arrivato, ti propone dove archiviarlo secondo la mappa dell'hub e segnala quando un originale cambia, così le note restano al passo.
+
 ## Uso quotidiano
 
 - Per le cose personali apri l'agente sul Desktop.
@@ -28,7 +30,7 @@ Per aggiornare il sistema scrivi all'agente *aggiorna Scrivano*.
 - **Il Mac chiede il permesso di accedere a Scrivania, Documenti e Download.** Concedilo all'app da cui parte l'agente: senza, non può leggerli. Se l'hai negato, riattivalo in Impostazioni di Sistema → Privacy e sicurezza → File e cartelle.
 - **Su Windows alcune icone non si spostano.** Sono in `Public\Desktop`, condiviso tra gli utenti del PC: servono i permessi di amministratore, quindi restano dove sono.
 - **Word non trova più un documento recente.** È normale dopo il riordino: aprilo dalla nuova cartella.
-- **Disinstallare.** Cancella `Documenti\Scrivano` e, se c'è, `%LOCALAPPDATA%\Scrivano`, su Mac `~/Library/Application Support/Scrivano`, poi sul Desktop `AGENTS.md`, `MAPPA.md`, `MANUTENZIONE.md` e le `GUIDA.md` delle cartelle. Se usi Codex, cancella anche `.codex-root` e togli `".codex-root"` da `project_root_markers` in `~/.codex/config.toml`. Il riordino e le note restano.
+- **Disinstallare.** Cancella `Documenti\Scrivano` e, se c'è, `%LOCALAPPDATA%\Scrivano`, su Mac `~/Library/Application Support/Scrivano`, poi sul Desktop `AGENTS.md`, `MAPPA.md`, `MANUTENZIONE.md` e le `GUIDA.md` delle cartelle. Se usi Codex, cancella anche `.codex-root` e togli `".codex-root"` da `project_root_markers` in `~/.codex/config.toml`. Il riordino e le note restano. In modalità hub cancella lo strumento e il registro, poi togli dall'hub la sezione «Ingresso».
 
 ## Per l'agente
 
@@ -38,7 +40,7 @@ Se l'utente ti chiede di installare il sistema, segui [INSTALLA.md](./INSTALLA.m
 
 `controlla.py` rileva i cambiamenti nei file e li tiene in una coda da revisionare, così le note derivate non restano indietro rispetto alle fonti. `riordina.py` fa l'inventario di una cartella ed esegue un piano di riordino approvato. Usano Python 3.10+ e solo la libreria standard, senza inviare dati in rete. Le decisioni spettano all'agente: `controlla.py` non modifica i file osservati e non interpreta i cambiamenti, `riordina.py` esegue soltanto il piano che riceve.
 
-Le decisioni di progetto sono nel [progetto di installazione](docs/progetto-installazione.md); i modelli delle pagine del Desktop e il catalogo dei domini in [modelli](./modelli/); le novità di ogni versione nel [CHANGELOG](./CHANGELOG.md).
+Le decisioni di progetto sono nel [progetto di installazione](docs/progetto-installazione.md); i modelli delle pagine del Desktop, della sezione «Ingresso» di un hub e il catalogo dei domini in [modelli](./modelli/); le novità di ogni versione nel [CHANGELOG](./CHANGELOG.md).
 
 ### Comandi del rilevatore
 
@@ -61,6 +63,8 @@ Gli ID sono esempi. `--prefix` è un percorso relativo alla radice, con `/` o `\
 Parti da [config.example.json](./config.example.json). I percorsi relativi sono risolti rispetto al file di configurazione; `~` vale la cartella dell'utente.
 
 - `desktop`: radice dell'archivio da cui parte `links`.
+- `notes`: in modalità hub, la cartella delle note, al posto di `desktop`; se ci sono tutte e due, `links` usa `notes`.
+- `start_pages`: le pagine da cui `links` parte, relative a `notes` o `desktop`; di norma `AGENTS.md`, `MAPPA.md` e `MANUTENZIONE.md`, in un hub di solito `["AGENTS.md"]`.
 - `database`: registro SQLite, di norma `.stato/registro.sqlite`; in una cartella locale, non sincronizzata.
 - `roots`: radici osservate, ognuna con `id` e `path`. `depth: N` osserva N livelli sotto la radice; `recursive: false` equivale a 1.
 - `exclude_dirs`: nomi esatti da saltare a qualsiasi livello, di cartelle o di file.
@@ -102,13 +106,25 @@ Il piano è un JSON con la radice, le mosse e, se servono, le cartelle-contenito
  "vuote": ["Nuova cartella"]}
 ```
 
-- Le mosse descrivono l'albero di partenza: origini e destinazioni non si ripetono, non si sovrappongono e restano dentro la radice. Le cartelle mancanti vengono create. Un cambio di sole maiuscole passa da un nome intermedio, in due piani.
+Per spostare tra cartelle diverse, per esempio dal Desktop e da Download all'archivio degli originali, al posto di `radice` il piano nomina le `radici` e ogni percorso comincia dal nome della sua:
+
+```json
+{"radici": {"Desktop": "C:/Users/utente/Desktop",
+            "Archivio": "D:/Drive/Archivio"},
+ "mosse": [{"da": "Desktop/fattura.pdf", "a": "Archivio/finanze/fattura.pdf"}],
+ "vuote": []}
+```
+
+I nomi non contengono `/`, `\` o `:` e non si ripetono, nemmeno cambiando le maiuscole; le radici non stanno una dentro l'altra.
+
+- Le mosse descrivono l'albero di partenza: origini e destinazioni non si ripetono, non si sovrappongono e restano dentro le radici.
+- Se origine e destinazione stanno su dischi diversi, la mossa copia l'origine accanto alla destinazione con il suffisso `.scrivano-copia`, senza sovrascrivere, rilegge ogni file copiato e ne confronta l'impronta, dà alla copia il nome finale e solo allora toglie l'origine. Il giornale annota l'inizio della copia e la copia verificata. Rilanciato dopo un'interruzione, lo script ricopia da capo se la copia era a metà, e completa la mossa, contata in `da_finire`, se la copia era finita e mancava solo da togliere l'origine: toglie quello che ne resta solo se la destinazione lo ha identico, altrimenti si ferma e chiede di verificare a mano. Una cartella con dentro link simbolici o junction non si copia su un altro disco. Le cartelle mancanti vengono create. Un cambio di sole maiuscole passa da un nome intermedio, in due piani.
 - Dopo le mosse, ogni cartella di `vuote` rimasta vuota viene tolta. `.DS_Store` e `Thumbs.db` non contano: si cancellano con la cartella, annotati nel giornale, e Finder ed Esplora risorse li rigenerano. Una cartella con qualcos'altro dentro, o con un metadato in uso, resta e compare in `cartelle_rimaste`.
-- Prima di spostare, lo script controlla l'intero piano: con un solo problema non sposta nulla. Non sovrascrive, non cancella altro che quei metadati e lascia a mano link simbolici e junction, insieme a ciò che si raggiunge attraverso di loro; i collegamenti `.lnk` e `.url`, gli alias del Finder e i `.webloc` sono file normali.
+- Prima di spostare, lo script controlla l'intero piano: con un solo problema non sposta nulla. Non sovrascrive, non cancella altro che quei metadati e le origini già copiate su un altro disco e lascia a mano link simbolici e junction, insieme a ciò che si raggiunge attraverso di loro; i collegamenti `.lnk` e `.url`, gli alias del Finder e i `.webloc` sono file normali.
 - Durante l'esecuzione si ferma al primo errore, per esempio un file aperto. Rilanciato sullo stesso piano, salta le mosse annotate nel giornale e già compiute, cioè con l'origine sparita e la destinazione presente, e riprende. La stessa situazione senza traccia nel giornale è un problema del piano.
 - Ogni mossa è annotata in `piano.giornale.jsonl`, accanto al piano, prima di essere eseguita: ogni piano ha il suo giornale, quindi una correzione successiva va in un piano nuovo, con un altro nome. `annulla` ripercorre il giornale al contrario: ricrea le cartelle tolte, riporta i file, rimuove le cartelle create se sono rimaste vuote, a parte i metadati, e lascia dove sono i file aggiunti dopo; a lavoro completo rinomina il giornale.
 - `riordina.lock`, accanto al piano, impedisce due esecuzioni insieme. Se resta dopo un'interruzione, verifica lo stato della cartella e poi cancellalo.
-- L'esecuzione confronta il numero di file prima e dopo, contando anche l'interno di `.git` e simili, che l'inventario invece salta, ma non i metadati: se cambia, qualcos'altro ha toccato la cartella nel frattempo.
+- L'esecuzione confronta il numero di file prima e dopo, sommato su tutte le radici del piano, contando anche l'interno di `.git` e simili, che l'inventario invece salta, ma non i metadati: se cambia, qualcos'altro ha toccato le cartelle nel frattempo, per esempio un client di sincronizzazione che ha scaricato un file nell'archivio. Quando completa una mossa interrotta, il conteggio scende dei file tolti dall'origine, riportati in `avanzi_tolti`.
 
 Riordina prima della prima scansione di `controlla.py`: dopo, ogni spostamento diventa una cancellazione più un'aggiunta da revisionare.
 
@@ -125,7 +141,7 @@ Riordina prima della prima scansione di `controlla.py`: dopo, ogni spostamento d
 | Scansioni/revisioni concorrenti | Scritture serializzate; in caso di lock oltre 15 secondi, riprova |
 | Autore o significato di una modifica | Non rilevati dallo strumento |
 
-I comandi restituiscono codice non zero in caso di errore; `scan` anche quando una radice ha errori, `links` anche quando trova collegamenti rotti, `riordina.py` anche quando il piano ha problemi, il conteggio dei file cambia o l'inventario non legge qualcosa. Il controllo link parte da `AGENTS.md`, `MAPPA.md` e `MANUTENZIONE.md` nella radice `desktop`, segnala quelle mancanti e segue i Markdown locali collegati, saltando le cartelle `Archivio`, i percorsi esclusi dalla configurazione e i blocchi di codice. Non trova pagine isolate né verifica URL remoti o contenuti.
+I comandi restituiscono codice non zero in caso di errore; `scan` anche quando una radice ha errori, `links` anche quando trova collegamenti rotti, `riordina.py` anche quando il piano ha problemi, il conteggio dei file cambia o l'inventario non legge qualcosa. Il controllo link parte dalle `start_pages`, di norma `AGENTS.md`, `MAPPA.md` e `MANUTENZIONE.md`, nella cartella `notes` o `desktop`, segnala quelle mancanti e segue i Markdown locali collegati, saltando le cartelle `Archivio` e `archive`, con le pagine storiche, i percorsi esclusi dalla configurazione e i blocchi di codice. Non trova pagine isolate né verifica URL remoti o contenuti.
 
 ### Test
 
